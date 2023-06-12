@@ -127,7 +127,7 @@ pub(crate) fn color_commitment(channel_id: &[u8; 32], funding_outpoint: &OutPoin
 		} else {
 			let rgb_payment_info = RgbPaymentInfo {
 				contract_id: rgb_info.contract_id,
-				amount: htlc.amount_rgb,
+				amount: htlc.amount_rgb.unwrap(),
 				local_rgb_amount: rgb_info.local_rgb_amount,
 				remote_rgb_amount: rgb_info.remote_rgb_amount,
 			};
@@ -267,7 +267,7 @@ pub(crate) fn color_htlc(htlc_tx: &mut Transaction, htlc: &HTLCOutputInCommitmen
 			method: CloseMethod::OpretFirst,
 			vout: 0,
 			blinding: 777,
-		} => htlc.amount_rgb
+		} => htlc.amount_rgb.unwrap()
 	];
 
 	let input_outpoints_bt: BTreeSet<BtcOutPoint> = bset![
@@ -419,6 +419,11 @@ pub fn get_rgb_channel_info(channel_id: &[u8; 32], ldk_data_dir: &PathBuf) -> (R
 	(info, info_file_path)
 }
 
+/// Whether the channel data for a channel exist
+pub fn is_channel_rgb(channel_id: &[u8; 32], ldk_data_dir: &PathBuf) -> bool {
+	ldk_data_dir.join(hex::encode(channel_id)).exists()
+}
+
 /// Write RgbInfo file
 pub fn write_rgb_channel_info(path: &PathBuf, rgb_info: &RgbInfo) {
 	let serialized_info = serde_json::to_string(&rgb_info).expect("valid rgb info");
@@ -513,6 +518,11 @@ pub(crate) fn update_rgb_channel_amount(channel_id: &[u8; 32], rgb_offered_htlc:
 	}
 
 	write_rgb_channel_info(&info_file_path, &rgb_info)
+}
+
+/// Whether the payment is colored
+pub(crate) fn is_payment_rgb(ldk_data_dir: &PathBuf, payment_hash: &PaymentHash) -> bool {
+	ldk_data_dir.join(hex::encode(payment_hash.0)).exists()
 }
 
 /// Filter first_hops for contract_id

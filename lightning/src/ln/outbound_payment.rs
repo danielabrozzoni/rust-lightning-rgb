@@ -17,7 +17,7 @@ use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{ChannelDetails, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, PaymentId};
 use crate::ln::onion_utils::HTLCFailReason;
-use crate::rgb_utils::filter_first_hops;
+use crate::rgb_utils::{filter_first_hops, is_payment_rgb};
 use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters, RoutePath, Router};
 use crate::util::errors::APIError;
 use crate::util::events;
@@ -603,7 +603,9 @@ impl OutboundPayments {
 		}
 
 		let mut filtered_first_hops = first_hops.iter().collect::<Vec<_>>();
-		let contract_id = filter_first_hops(&self.ldk_data_dir, &payment_hash, &mut filtered_first_hops);
+		let contract_id = is_payment_rgb(&self.ldk_data_dir, &payment_hash).then(|| {
+			filter_first_hops(&self.ldk_data_dir, &payment_hash, &mut filtered_first_hops)
+		});
 
 		let route = router.find_route(
 			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
@@ -667,7 +669,9 @@ impl OutboundPayments {
 							total_msat, payment_hash, keysend_preimage, payment_secret, pending_amt_msat, ..
 						} => {
 							let mut filtered_first_hops = first_hops.iter().collect::<Vec<_>>();
-							let contract_id = filter_first_hops(&self.ldk_data_dir, &payment_hash, &mut filtered_first_hops);
+							let contract_id = is_payment_rgb(&self.ldk_data_dir, &payment_hash).then(|| {
+								filter_first_hops(&self.ldk_data_dir, &payment_hash, &mut filtered_first_hops)
+							});
 
 							let route = match router.find_route(
 								&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,

@@ -44,7 +44,7 @@ use crate::ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfi
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::InvoiceFeatures;
-use crate::rgb_utils::{get_rgb_payment_info, handle_funding};
+use crate::rgb_utils::{get_rgb_payment_info, handle_funding, is_payment_rgb};
 use crate::routing::gossip::NetworkGraph;
 use crate::routing::router::{DefaultRouter, InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters, RoutePath, Router};
 use crate::routing::scoring::ProbabilisticScorer;
@@ -126,7 +126,7 @@ pub(super) struct PendingHTLCInfo {
 	pub(super) incoming_amt_msat: Option<u64>, // Added in 0.0.113
 	pub(super) outgoing_amt_msat: u64,
 	pub(super) outgoing_cltv_value: u32,
-	pub(super) amount_rgb: u64,
+	pub(super) amount_rgb: Option<u64>,
 }
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
@@ -1658,7 +1658,7 @@ where
 	/// [`Event::FundingGenerationReady::user_channel_id`]: events::Event::FundingGenerationReady::user_channel_id
 	/// [`Event::FundingGenerationReady::temporary_channel_id`]: events::Event::FundingGenerationReady::temporary_channel_id
 	/// [`Event::ChannelClosed::channel_id`]: events::Event::ChannelClosed::channel_id
-	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_channel_id: u128, override_config: Option<UserConfig>, consignment_endpoint: ConsignmentEndpoint) -> Result<[u8; 32], APIError> {
+	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_channel_id: u128, override_config: Option<UserConfig>, consignment_endpoint: Option<ConsignmentEndpoint>) -> Result<[u8; 32], APIError> {
 		if channel_value_satoshis < 1000 {
 			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
 		}
@@ -2052,7 +2052,7 @@ where
 	}
 
 	fn construct_recv_pending_htlc_info(&self, hop_data: msgs::OnionHopData, shared_secret: [u8; 32],
-		payment_hash: PaymentHash, amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>, amount_rgb: u64) -> Result<PendingHTLCInfo, ReceiveError>
+		payment_hash: PaymentHash, amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>, amount_rgb: Option<u64>) -> Result<PendingHTLCInfo, ReceiveError>
 	{
 		// final_incorrect_cltv_expiry
 		if hop_data.outgoing_cltv_value != cltv_expiry {
@@ -2471,8 +2471,12 @@ where
 		}
 		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash);
 
-		let rgb_payment_info = get_rgb_payment_info(&payment_hash, &self.ldk_data_dir);
-		let amount_rgb = rgb_payment_info.amount;
+		let amount_rgb = if is_payment_rgb(&self.ldk_data_dir, &payment_hash) {
+			let rgb_payment_info = get_rgb_payment_info(&payment_hash, &self.ldk_data_dir);
+			Some(rgb_payment_info.amount)
+		} else {
+			None
+		};
 
 		let err: Result<(), _> = loop {
 			let (counterparty_node_id, id) = match self.short_to_chan_info.read().unwrap().get(&path.first().unwrap().short_channel_id) {
@@ -4519,7 +4523,9 @@ where
 		let ((funding_msg, monitor), chan) =
 			match peer_state.channel_by_id.entry(msg.temporary_channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					handle_funding(&msg.temporary_channel_id, msg.funding_txid.to_string(), &self.ldk_data_dir, chan.get().consignment_endpoint.clone())?;
+					if let Some(consignment_endpoint) = &chan.get().consignment_endpoint {
+						handle_funding(&msg.temporary_channel_id, msg.funding_txid.to_string(), &self.ldk_data_dir, consignment_endpoint.clone())?;
+					}
 					(try_chan_entry!(self, chan.get_mut().funding_created(msg, best_block, &self.signer_provider, &self.logger), chan), chan.remove())
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id))

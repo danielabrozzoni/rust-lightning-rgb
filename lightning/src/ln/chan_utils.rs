@@ -565,7 +565,7 @@ pub struct HTLCOutputInCommitment {
 	/// value is spent to additional transaction fees).
 	pub transaction_output_index: Option<u32>,
 	/// The RGB amount allocated to the HTLC
-	pub amount_rgb: u64,
+	pub amount_rgb: Option<u64>,
 }
 
 impl_writeable_tlv_based!(HTLCOutputInCommitment, {
@@ -574,7 +574,7 @@ impl_writeable_tlv_based!(HTLCOutputInCommitment, {
 	(4, cltv_expiry, required),
 	(6, payment_hash, required),
 	(8, transaction_output_index, option),
-	(10, amount_rgb, required),
+	(10, amount_rgb, option),
 });
 
 #[inline]
@@ -1018,7 +1018,7 @@ impl HolderCommitmentTransaction {
 			opt_non_zero_fee_anchors: None,
 		};
 		let mut htlcs_with_aux: Vec<(_, ())> = Vec::new();
-		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, 0, 0, false, dummy_key.clone(), dummy_key.clone(), keys, 0, &mut htlcs_with_aux, &channel_parameters.as_counterparty_broadcastable());
+		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, 0, 0, false, dummy_key.clone(), dummy_key.clone(), keys, 0, &mut htlcs_with_aux, &channel_parameters.as_counterparty_broadcastable(), false);
 		HolderCommitmentTransaction {
 			inner,
 			counterparty_sig: dummy_sig,
@@ -1235,6 +1235,7 @@ pub struct CommitmentTransaction {
 	keys: TxCreationKeys,
 	// For access to the pre-built transaction, see doc for trust()
 	pub(crate) built: BuiltCommitmentTransaction,
+	pub(crate) is_colored: bool,
 }
 
 impl Eq for CommitmentTransaction {}
@@ -1265,6 +1266,7 @@ impl_writeable_tlv_based!(CommitmentTransaction, {
 	(12, htlcs, vec_type),
 	(14, opt_anchors, option),
 	(16, opt_non_zero_fee_anchors, option),
+	(18, is_colored, required),
 });
 
 impl CommitmentTransaction {
@@ -1278,7 +1280,7 @@ impl CommitmentTransaction {
 	/// Only include HTLCs that are above the dust limit for the channel.
 	///
 	/// (C-not exported) due to the generic though we likely should expose a version without
-	pub fn new_with_auxiliary_htlc_data<T>(commitment_number: u64, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, opt_anchors: bool, broadcaster_funding_key: PublicKey, countersignatory_funding_key: PublicKey, keys: TxCreationKeys, feerate_per_kw: u32, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters) -> CommitmentTransaction {
+	pub fn new_with_auxiliary_htlc_data<T>(commitment_number: u64, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, opt_anchors: bool, broadcaster_funding_key: PublicKey, countersignatory_funding_key: PublicKey, keys: TxCreationKeys, feerate_per_kw: u32, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters, is_colored: bool) -> CommitmentTransaction {
 		// Sort outputs and populate output indices while keeping track of the auxiliary data
 		let (outputs, htlcs) = Self::internal_build_outputs(&keys, to_broadcaster_value_sat, to_countersignatory_value_sat, htlcs_with_aux, channel_parameters, opt_anchors, &broadcaster_funding_key, &countersignatory_funding_key).unwrap();
 
@@ -1298,6 +1300,7 @@ impl CommitmentTransaction {
 				txid
 			},
 			opt_non_zero_fee_anchors: None,
+			is_colored,
 		}
 	}
 
@@ -1574,9 +1577,11 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 		for this_htlc in inner.htlcs.iter() {
 			assert!(this_htlc.transaction_output_index.is_some());
 			let mut htlc_tx = build_htlc_transaction(&txid, inner.feerate_per_kw, channel_parameters.contest_delay(), &this_htlc, self.opt_anchors(), self.opt_non_zero_fee_anchors.is_some(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
-			match color_htlc(&mut htlc_tx, &this_htlc, &ldk_data_dir) {
-				Err(_e) => return Err(()),
-				_ => {}
+			if inner.is_colored {
+				match color_htlc(&mut htlc_tx, &this_htlc, &ldk_data_dir) {
+					Err(_e) => return Err(()),
+					_ => {}
+				}
 			}
 
 			let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, self.opt_anchors(), &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
@@ -1600,7 +1605,9 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 		if  this_htlc.offered && preimage.is_some() { unreachable!(); }
 
 		let mut htlc_tx = build_htlc_transaction(&txid, inner.feerate_per_kw, channel_parameters.contest_delay(), &this_htlc, self.opt_anchors(), self.opt_non_zero_fee_anchors.is_some(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
-		color_htlc(&mut htlc_tx, &this_htlc, &ldk_data_dir).expect("successful htlc tx coloring");
+		if inner.is_colored {
+			color_htlc(&mut htlc_tx, &this_htlc, &ldk_data_dir).expect("successful htlc tx coloring");
+		}
 
 		let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, self.opt_anchors(), &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
 
