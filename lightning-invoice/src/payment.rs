@@ -157,8 +157,8 @@ fn pay_invoice_using_amount<P: Deref>(
 		payment_params,
 		final_value_msat: amount_msats,
 	};
-
-	payer.send_payment(payment_hash, &payment_secret, payment_id, route_params, retry_strategy)
+	let override_rgb_amount = invoice.rgb_amount();
+	payer.send_payment(payment_hash, &payment_secret, payment_id, route_params, retry_strategy, override_rgb_amount)
 }
 
 fn expiry_time_from_unix_epoch(invoice: &Invoice) -> Duration {
@@ -183,7 +183,8 @@ trait Payer {
 	/// [`Route`]: lightning::routing::router::Route
 	fn send_payment(
 		&self, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>,
-		payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry
+		payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry,
+		override_rgb_amount: Option<u64>,
 	) -> Result<(), PaymentError>;
 }
 
@@ -200,9 +201,10 @@ where
 {
 	fn send_payment(
 		&self, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>,
-		payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry
+		payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry,
+		override_rgb_amount: Option<u64>,
 	) -> Result<(), PaymentError> {
-		self.send_payment_with_retry(payment_hash, payment_secret, payment_id, route_params, retry_strategy)
+		self.send_payment_with_retry(payment_hash, payment_secret, payment_id, route_params, retry_strategy, override_rgb_amount)
 			.map_err(|e| PaymentError::Sending(e))
 	}
 }

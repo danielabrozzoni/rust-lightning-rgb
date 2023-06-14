@@ -232,6 +232,8 @@ pub struct RouteHop {
 	/// The CLTV delta added for this hop. For the last hop, this should be the full CLTV value
 	/// expected at the destination, in excess of the current block height.
 	pub cltv_expiry_delta: u32,
+	/// RGB amount to send to the following node
+	pub rgb_amount: Option<u64>,
 }
 
 impl_writeable_tlv_based!(RouteHop, {
@@ -241,6 +243,7 @@ impl_writeable_tlv_based!(RouteHop, {
 	(6, channel_features, required),
 	(8, fee_msat, required),
 	(10, cltv_expiry_delta, required),
+	(12, rgb_amount, option),
 });
 
 /// A route directs a payment from the sender (us) to the recipient. If the recipient supports MPP,
@@ -1948,6 +1951,7 @@ where L::Target: Logger {
 				channel_features: payment_hop.candidate.features(),
 				fee_msat: payment_hop.fee_msat,
 				cltv_expiry_delta: payment_hop.candidate.cltv_expiry_delta(),
+				rgb_amount: None,
 			})
 		}).collect::<Vec<_>>();
 		// Propagate the cltv_expiry_delta one hop backwards since the delta from the current hop is

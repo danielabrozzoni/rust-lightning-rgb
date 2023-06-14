@@ -149,8 +149,9 @@ pub(super) fn construct_onion_keys<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T
 }
 
 /// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
-pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, amount_rgb: Option<u64>, payment_secret_option: &Option<PaymentSecret>, starting_htlc_offset: u32, keysend_preimage: &Option<PaymentPreimage>) -> Result<(Vec<msgs::OnionHopData>, u64, u32), APIError> {
+pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, payment_secret_option: &Option<PaymentSecret>, starting_htlc_offset: u32, keysend_preimage: &Option<PaymentPreimage>) -> Result<(Vec<msgs::OnionHopData>, u64, Option<u64>, u32), APIError> {
 	let mut cur_value_msat = 0u64;
+	let mut cur_amount_rgb = None;
 	let mut cur_cltv = starting_htlc_offset;
 	let mut last_short_channel_id = 0;
 	let mut res: Vec<msgs::OnionHopData> = Vec::with_capacity(path.len());
@@ -178,9 +179,10 @@ pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, amount
 				}
 			},
 			amt_to_forward: value_msat,
-			rgb_amount_to_forward: amount_rgb,
+			rgb_amount_to_forward: hop.rgb_amount,
 			outgoing_cltv_value: cltv,
 		});
+		cur_amount_rgb = hop.rgb_amount;
 		cur_value_msat += hop.fee_msat;
 		if cur_value_msat >= 21000000 * 100000000 * 1000 {
 			return Err(APIError::InvalidRoute{err: "Channel fees overflowed?".to_owned()});
@@ -191,7 +193,7 @@ pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, amount
 		}
 		last_short_channel_id = hop.short_channel_id;
 	}
-	Ok((res, cur_value_msat, cur_cltv))
+	Ok((res, cur_value_msat, cur_amount_rgb, cur_cltv))
 }
 
 /// Length of the onion data packet. Before TLV-based onions this was 20 65-byte hops, though now
@@ -907,26 +909,31 @@ mod tests {
 					RouteHop {
 						pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
+						rgb_amount: None,
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // We fill in the payloads manually instead of generating them from RouteHops.
 					},
 					RouteHop {
 						pubkey: PublicKey::from_slice(&hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
+						rgb_amount: None,
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // We fill in the payloads manually instead of generating them from RouteHops.
 					},
 					RouteHop {
 						pubkey: PublicKey::from_slice(&hex::decode("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap(),
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
+						rgb_amount: None,
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // We fill in the payloads manually instead of generating them from RouteHops.
 					},
 					RouteHop {
 						pubkey: PublicKey::from_slice(&hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]).unwrap(),
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
+						rgb_amount: None,
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // We fill in the payloads manually instead of generating them from RouteHops.
 					},
 					RouteHop {
 						pubkey: PublicKey::from_slice(&hex::decode("02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145").unwrap()[..]).unwrap(),
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
+						rgb_amount: None,
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // We fill in the payloads manually instead of generating them from RouteHops.
 					},
 			]],

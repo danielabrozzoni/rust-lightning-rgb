@@ -44,7 +44,7 @@ use crate::ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfi
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::InvoiceFeatures;
-use crate::rgb_utils::{get_rgb_payment_info, handle_funding, is_payment_rgb};
+use crate::rgb_utils::handle_funding;
 use crate::routing::gossip::NetworkGraph;
 use crate::routing::router::{DefaultRouter, InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters, RoutePath, Router};
 use crate::routing::scoring::ProbabilisticScorer;
@@ -2500,14 +2500,7 @@ where
 		let onion_keys = onion_utils::construct_onion_keys(&self.secp_ctx, &path, &session_priv)
 			.map_err(|_| APIError::InvalidRoute{err: "Pubkey along hop was maliciously selected".to_owned()})?;
 
-		let amount_rgb = if is_payment_rgb(&self.ldk_data_dir, &payment_hash) {
-			let rgb_payment_info = get_rgb_payment_info(&payment_hash, &self.ldk_data_dir);
-			Some(rgb_payment_info.amount)
-		} else {
-			None
-		};
-
-		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(path, total_value, amount_rgb, payment_secret, cur_height, keysend_preimage)?;
+		let (onion_payloads, htlc_msat, htlc_amount_rgb, htlc_cltv) = onion_utils::build_onion_payloads(&path, total_value, payment_secret, cur_height, keysend_preimage)?;
 		if onion_utils::route_size_insane(&onion_payloads) {
 			return Err(APIError::InvalidRoute{err: "Route size too large considering onion data".to_owned()});
 		}
@@ -2537,7 +2530,7 @@ where
 						payment_id,
 						payment_secret: payment_secret.clone(),
 						payment_params: payment_params.clone(),
-					}, onion_packet, &self.logger, amount_rgb);
+					}, onion_packet, &self.logger, htlc_amount_rgb);
 				match break_chan_entry!(self, send_res, chan) {
 					Some(monitor_update) => {
 						let update_id = monitor_update.update_id;
@@ -2648,7 +2641,7 @@ where
 
 	/// Similar to [`ChannelManager::send_payment`], but will automatically find a route based on
 	/// `route_params` and retry failed payment paths based on `retry_strategy`.
-	pub fn send_payment_with_retry(&self, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<(), RetryableSendFailure> {
+	pub fn send_payment_with_retry(&self, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry, override_rgb_amount: Option<u64>) -> Result<(), RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.pending_outbound_payments
@@ -2656,8 +2649,20 @@ where
 				&self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
 				&self.entropy_source, &self.node_signer, best_block_height, &self.logger,
 				&self.pending_events,
-				|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
-				self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
+				|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv| {
+					let path = match override_rgb_amount {
+						Some(v) => {
+							path.iter().map(|x| {
+								let mut x = x.clone();
+								x.rgb_amount = Some(v);
+								x
+							}).collect()
+						},
+						None => path.clone(),
+					};
+
+					self.send_payment_along_path(&path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv)
+				})
 	}
 
 	#[cfg(test)]
