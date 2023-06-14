@@ -127,6 +127,7 @@ pub(super) struct PendingHTLCInfo {
 	pub(super) outgoing_amt_msat: u64,
 	pub(super) outgoing_cltv_value: u32,
 	pub(super) amount_rgb: Option<u64>,
+	pub(super) outgoing_amount_rgb: Option<u64>,
 }
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
@@ -2086,6 +2087,25 @@ where
 				msg: "Upstream node sent less than we were supposed to receive in payment",
 			});
 		}
+		match (hop_data.rgb_amount_to_forward, amount_rgb) {
+			(Some(_), None) | (None, Some(_)) => {
+				return Err(ReceiveError {
+					err_code: 19, // TODO
+					err_data: vec![],
+					msg: "Upstream node didn't send what we expected",
+				});
+			},
+			(None, None) => {},
+			(Some(x), Some(y)) if x == y => {},
+			_ => {
+				return Err(ReceiveError {
+					err_code: 19, // TODO
+					err_data: vec![],
+					msg: "The payment's RGB amount doesn't match",
+				});
+
+			}
+		}
 
 		let routing = match hop_data.format {
 			msgs::OnionHopDataFormat::NonFinalNode { .. } => {
@@ -2144,6 +2164,7 @@ where
 			outgoing_amt_msat: amt_msat,
 			outgoing_cltv_value: hop_data.outgoing_cltv_value,
 			amount_rgb,
+			outgoing_amount_rgb: amount_rgb,
 		})
 	}
 
@@ -2244,11 +2265,12 @@ where
 					outgoing_amt_msat: next_hop_data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
 					amount_rgb: msg.amount_rgb,
+					outgoing_amount_rgb: msg.amount_rgb,
 				})
 			}
 		};
 
-		if let &PendingHTLCStatus::Forward(PendingHTLCInfo { ref routing, ref outgoing_amt_msat, ref outgoing_cltv_value, .. }) = &pending_forward_info {
+		if let &PendingHTLCStatus::Forward(PendingHTLCInfo { ref routing, ref outgoing_amt_msat, ref outgoing_cltv_value, ref amount_rgb, ref outgoing_amount_rgb, .. }) = &pending_forward_info {
 			// If short_channel_id is 0 here, we'll reject the HTLC as there cannot be a channel
 			// with a short_channel_id of 0. This is important as various things later assume
 			// short_channel_id is non-0 in any ::Forward.
@@ -2313,6 +2335,18 @@ where
 						}
 						if let Err((err, code)) = chan.htlc_satisfies_config(&msg, *outgoing_amt_msat, *outgoing_cltv_value) {
 							break Some((err, code, chan_update_opt));
+						}
+						match (amount_rgb, outgoing_amount_rgb) {
+							(Some(_), None) | (None, Some(_)) => {
+								break Some(("Refusing to forward a non-authorized swap.", 0x1000 | 11, chan_update_opt)); // amount_below_minimum
+							},
+							(None, None) => {},
+							(Some(x), Some(y)) if x == y => {
+								println!("Forwarding RGB payment of value: {}", x);
+							},
+							_ => {
+								break Some(("Refusing to forward a payment with non-matching RGB amount", 0x1000 | 11, chan_update_opt)); // amount_below_minimum
+							}
 						}
 						chan_update_opt
 					} else {
@@ -2465,11 +2499,6 @@ where
 
 		let onion_keys = onion_utils::construct_onion_keys(&self.secp_ctx, &path, &session_priv)
 			.map_err(|_| APIError::InvalidRoute{err: "Pubkey along hop was maliciously selected".to_owned()})?;
-		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(path, total_value, payment_secret, cur_height, keysend_preimage)?;
-		if onion_utils::route_size_insane(&onion_payloads) {
-			return Err(APIError::InvalidRoute{err: "Route size too large considering onion data".to_owned()});
-		}
-		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash);
 
 		let amount_rgb = if is_payment_rgb(&self.ldk_data_dir, &payment_hash) {
 			let rgb_payment_info = get_rgb_payment_info(&payment_hash, &self.ldk_data_dir);
@@ -2477,6 +2506,12 @@ where
 		} else {
 			None
 		};
+
+		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(path, total_value, amount_rgb, payment_secret, cur_height, keysend_preimage)?;
+		if onion_utils::route_size_insane(&onion_payloads) {
+			return Err(APIError::InvalidRoute{err: "Route size too large considering onion data".to_owned()});
+		}
+		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash);
 
 		let err: Result<(), _> = loop {
 			let (counterparty_node_id, id) = match self.short_to_chan_info.read().unwrap().get(&path.first().unwrap().short_channel_id) {
@@ -3053,7 +3088,7 @@ where
 										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id,
 										forward_info: PendingHTLCInfo {
 											routing, incoming_shared_secret, payment_hash, outgoing_amt_msat,
-											outgoing_cltv_value, incoming_amt_msat: _, amount_rgb
+											outgoing_cltv_value, incoming_amt_msat: _, outgoing_amount_rgb: _, amount_rgb
 										}
 									}) => {
 										macro_rules! failure_handler {
@@ -3166,7 +3201,7 @@ where
 										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id: _,
 										forward_info: PendingHTLCInfo {
 											incoming_shared_secret, payment_hash, outgoing_amt_msat, outgoing_cltv_value,
-											routing: PendingHTLCRouting::Forward { onion_packet, .. }, incoming_amt_msat: _, amount_rgb,
+											routing: PendingHTLCRouting::Forward { onion_packet, .. }, incoming_amt_msat: _, amount_rgb: _, outgoing_amount_rgb,
 										},
 									}) => {
 										log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", prev_short_channel_id, log_bytes!(payment_hash.0), short_chan_id);
@@ -3180,7 +3215,7 @@ where
 										});
 										if let Err(e) = chan.get_mut().queue_add_htlc(outgoing_amt_msat,
 											payment_hash, outgoing_cltv_value, htlc_source.clone(),
-											onion_packet, &self.logger, amount_rgb)
+											onion_packet, &self.logger, outgoing_amount_rgb)
 										{
 											if let ChannelError::Ignore(msg) = e {
 												log_trace!(self.logger, "Failed to forward HTLC with payment_hash {}: {}", log_bytes!(payment_hash.0), msg);
@@ -4924,6 +4959,8 @@ where
 											payment_hash: forward_info.payment_hash,
 											inbound_amount_msat: forward_info.incoming_amt_msat.unwrap(),
 											expected_outbound_amount_msat: forward_info.outgoing_amt_msat,
+											inbound_rgb_amount: forward_info.amount_rgb,
+											expected_outbound_rgb_amount: forward_info.outgoing_amount_rgb,
 											intercept_id
 										});
 										entry.insert(PendingAddHTLCInfo {
@@ -6685,6 +6722,7 @@ impl_writeable_tlv_based!(PendingHTLCInfo, {
 	(8, outgoing_cltv_value, required),
 	(9, incoming_amt_msat, option),
 	(10, amount_rgb, required),
+	(12, outgoing_amount_rgb, required),
 });
 
 

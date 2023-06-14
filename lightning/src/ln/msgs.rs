@@ -1165,6 +1165,7 @@ mod fuzzy_internal_msgs {
 		/// Message serialization may panic if this value is more than 21 million Bitcoin.
 		pub(crate) amt_to_forward: u64,
 		pub(crate) outgoing_cltv_value: u32,
+		pub(crate) rgb_amount_to_forward: Option<u64>,
 	}
 
 	pub struct DecodedOnionErrorPacket {
@@ -1609,7 +1610,8 @@ impl Writeable for OnionHopData {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(self.amt_to_forward), required),
 					(4, HighZeroBytesDroppedBigSize(self.outgoing_cltv_value), required),
-					(6, short_channel_id, required)
+					(6, short_channel_id, required),
+					(10, self.rgb_amount_to_forward, option)
 				});
 			},
 			OnionHopDataFormat::FinalNode { ref payment_data, ref keysend_preimage } => {
@@ -1617,6 +1619,7 @@ impl Writeable for OnionHopData {
 					(2, HighZeroBytesDroppedBigSize(self.amt_to_forward), required),
 					(4, HighZeroBytesDroppedBigSize(self.outgoing_cltv_value), required),
 					(8, payment_data, option),
+					(10, self.rgb_amount_to_forward, option),
 					(5482373484, keysend_preimage, option)
 				});
 			},
@@ -1632,11 +1635,13 @@ impl Readable for OnionHopData {
 		let mut short_id: Option<u64> = None;
 		let mut payment_data: Option<FinalOnionHopData> = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
+		let mut rgb_amount_to_forward: Option<u64> = None;
 		read_tlv_fields!(r, {
 			(2, amt, required),
 			(4, cltv_value, required),
 			(6, short_id, option),
 			(8, payment_data, option),
+			(10, rgb_amount_to_forward, option),
 			// See https://github.com/lightning/blips/blob/master/blip-0003.md
 			(5482373484, keysend_preimage, option)
 		});
@@ -1664,6 +1669,7 @@ impl Readable for OnionHopData {
 		Ok(OnionHopData {
 			format,
 			amt_to_forward: amt.0,
+			rgb_amount_to_forward,
 			outgoing_cltv_value: cltv_value.0,
 		})
 	}
