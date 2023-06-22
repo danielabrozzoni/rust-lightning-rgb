@@ -122,6 +122,7 @@ pub(crate) fn color_commitment(channel_id: &[u8; 32], funding_outpoint: &OutPoin
 			fs::remove_file(rgb_payment_info_hash_path).expect("able to remove file");
 		}
 
+		// println!("color_commitment htlc: amount_rgb={:?}, offered={}, rgb_payment_info_path_exists={}", htlc.amount_rgb, htlc.offered, rgb_payment_info_path.exists());
 		let rgb_payment_info = if rgb_payment_info_path.exists() {
 			parse_rgb_payment_info(&rgb_payment_info_path)
 		} else {
@@ -156,6 +157,7 @@ pub(crate) fn color_commitment(channel_id: &[u8; 32], funding_outpoint: &OutPoin
 	} else {
 		(rgb_info.local_rgb_amount, rgb_info.remote_rgb_amount)
 	};
+	// println!("color_commitment: local_amt={:?} remote_amt={:?}", local_amt, remote_amt);
 	let (vout_p2wpkh_amt, vout_p2wsh_amt) = if counterparty {
 		(local_amt, remote_amt)
 	} else {
@@ -244,6 +246,7 @@ pub(crate) fn color_commitment(channel_id: &[u8; 32], funding_outpoint: &OutPoin
 
 /// Color HTLC transaction
 pub(crate) fn color_htlc(htlc_tx: &mut Transaction, htlc: &HTLCOutputInCommitment, ldk_data_dir: &PathBuf) -> Result<(), ChannelError> {
+	println!("color_htlc: amount_rgb={:?}", htlc.amount_rgb);
 	let mut psbt = Psbt::with(htlc_tx.clone(), PsbtVersion::V0).expect("valid transaction");
 
 	let mut rgb_client = get_rgb_node_client(&ldk_data_dir);

@@ -2087,11 +2087,12 @@ where
 				msg: "Upstream node sent less than we were supposed to receive in payment",
 			});
 		}
+		dbg!((&hop_data.rgb_amount_to_forward, amount_rgb, amt_msat));
 		match (hop_data.rgb_amount_to_forward, amount_rgb) {
 			(Some(_), None) | (None, Some(_)) => {
 				return Err(ReceiveError {
 					err_code: 19, // TODO
-					err_data: vec![],
+					err_data: vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
 					msg: "Upstream node didn't send what we expected",
 				});
 			},
@@ -2100,7 +2101,7 @@ where
 			_ => {
 				return Err(ReceiveError {
 					err_code: 19, // TODO
-					err_data: vec![],
+					err_data: vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
 					msg: "The payment's RGB amount doesn't match",
 				});
 
@@ -2254,6 +2255,7 @@ where
 					},
 				};
 
+				log_trace!(self.logger, "Forward incoming_msat: {} outgoing_msat: {} incoming_rgb: {:?} outgoing_rgb: {:?} over {}", msg.amount_msat, next_hop_data.amt_to_forward, msg.amount_rgb, next_hop_data.rgb_amount_to_forward, short_channel_id);
 				PendingHTLCStatus::Forward(PendingHTLCInfo {
 					routing: PendingHTLCRouting::Forward {
 						onion_packet: outgoing_packet,
@@ -2265,7 +2267,7 @@ where
 					outgoing_amt_msat: next_hop_data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
 					amount_rgb: msg.amount_rgb,
-					outgoing_amount_rgb: msg.amount_rgb,
+					outgoing_amount_rgb: next_hop_data.rgb_amount_to_forward,
 				})
 			}
 		};
@@ -2333,21 +2335,22 @@ where
 						if *outgoing_amt_msat < chan.get_counterparty_htlc_minimum_msat() { // amount_below_minimum
 							break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, chan_update_opt));
 						}
-						if let Err((err, code)) = chan.htlc_satisfies_config(&msg, *outgoing_amt_msat, *outgoing_cltv_value) {
-							break Some((err, code, chan_update_opt));
-						}
-						match (amount_rgb, outgoing_amount_rgb) {
-							(Some(_), None) | (None, Some(_)) => {
-								break Some(("Refusing to forward a non-authorized swap.", 0x1000 | 11, chan_update_opt)); // amount_below_minimum
-							},
-							(None, None) => {},
-							(Some(x), Some(y)) if x == y => {
-								println!("Forwarding RGB payment of value: {}", x);
-							},
-							_ => {
-								break Some(("Refusing to forward a payment with non-matching RGB amount", 0x1000 | 11, chan_update_opt)); // amount_below_minimum
-							}
-						}
+						// if let Err((err, code)) = chan.htlc_satisfies_config(&msg, *outgoing_amt_msat, *outgoing_cltv_value) {
+						// 	break Some((err, code, chan_update_opt));
+						// }
+						dbg!(&amount_rgb, &outgoing_amount_rgb);
+						// match (amount_rgb, outgoing_amount_rgb) {
+						// 	(Some(_), None) | (None, Some(_)) => {
+						// 		break Some(("Refusing to forward a non-authorized swap.", 0x1000 | 11, chan_update_opt)); // amount_below_minimum
+						// 	},
+						// 	(None, None) => {},
+						// 	(Some(x), Some(y)) if x == y => {
+						// 		println!("Forwarding RGB payment of value: {}", x);
+						// 	},
+						// 	_ => {
+						// 		break Some(("Refusing to forward a payment with non-matching RGB amount", 0x1000 | 11, chan_update_opt)); // amount_below_minimum
+						// 	}
+						// }
 						chan_update_opt
 					} else {
 						if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + MIN_CLTV_EXPIRY_DELTA as u64 {
@@ -2501,6 +2504,12 @@ where
 			.map_err(|_| APIError::InvalidRoute{err: "Pubkey along hop was maliciously selected".to_owned()})?;
 
 		let (onion_payloads, htlc_msat, htlc_amount_rgb, htlc_cltv) = onion_utils::build_onion_payloads(&path, total_value, payment_secret, cur_height, keysend_preimage)?;
+		log_trace!(self.logger, "Send payment along path: htlc_msat {} htlc_amount_rgb {:?}", htlc_msat, htlc_amount_rgb);
+		log_trace!(self.logger, "Onion payloads: [");
+		for item in &onion_payloads {
+			log_trace!(self.logger, "\tamt_to_forward: {} rgb_amount_to_forward: {:?}", item.amt_to_forward, item.rgb_amount_to_forward);
+		}
+
 		if onion_utils::route_size_insane(&onion_payloads) {
 			return Err(APIError::InvalidRoute{err: "Route size too large considering onion data".to_owned()});
 		}
@@ -4143,7 +4152,7 @@ where
 					|htlc_claim_value_msat| {
 						if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
 							let fee_earned_msat = if let Some(claimed_htlc_value) = htlc_claim_value_msat {
-								Some(claimed_htlc_value - forwarded_htlc_value)
+								claimed_htlc_value.checked_sub(forwarded_htlc_value)
 							} else { None };
 
 							let prev_channel_id = Some(prev_outpoint.to_channel_id());

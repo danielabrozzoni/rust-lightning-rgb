@@ -226,9 +226,10 @@ pub struct RouteHop {
 	/// to reach this node.
 	pub channel_features: ChannelFeatures,
 	/// The fee taken on this hop (for paying for the use of the *next* channel in the path).
-	/// For the last hop, this should be the full value of the payment (might be more than
-	/// requested if we had to match htlc_minimum_msat).
+	/// For the last hop, this should be zero
 	pub fee_msat: u64,
+    /// How much to pay the node.
+	pub payment_amount: u64,
 	/// The CLTV delta added for this hop. For the last hop, this should be the full CLTV value
 	/// expected at the destination, in excess of the current block height.
 	pub cltv_expiry_delta: u32,
@@ -244,6 +245,7 @@ impl_writeable_tlv_based!(RouteHop, {
 	(8, fee_msat, required),
 	(10, cltv_expiry_delta, required),
 	(12, rgb_amount, option),
+	(14, payment_amount, required),
 });
 
 /// A route directs a payment from the sender (us) to the recipient. If the recipient supports MPP,
@@ -1950,6 +1952,7 @@ where L::Target: Logger {
 				short_channel_id: payment_hop.candidate.short_channel_id(),
 				channel_features: payment_hop.candidate.features(),
 				fee_msat: payment_hop.fee_msat,
+				payment_amount: final_value_msat,
 				cltv_expiry_delta: payment_hop.candidate.cltv_expiry_delta(),
 				rgb_amount: None,
 			})
