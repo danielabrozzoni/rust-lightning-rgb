@@ -239,6 +239,15 @@ impl Readable for InterceptId {
 	}
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+/// Next hop to forward the payment to
+pub enum NextHopForward<'c> {
+	/// Full public key of the peer and channel id
+	ChannelId(PublicKey, &'c [u8; 32]),
+	/// Short channel id
+	ShortChannelId(u64),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 /// Uniquely describes an HTLC by its source. Just the guaranteed-unique subset of [`HTLCSource`].
 pub(crate) enum SentHTLCId {
@@ -2097,12 +2106,12 @@ where
 				});
 			},
 			(None, None) => {},
-			(Some(x), Some(y)) if x == y => {},
+			(Some(x), Some(y)) if x < y => {},
 			_ => {
 				return Err(ReceiveError {
 					err_code: 19, // TODO
 					err_data: vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-					msg: "The payment's RGB amount doesn't match",
+					msg: "The payment's RGB is lower than expected",
 				});
 
 			}
@@ -2285,7 +2294,8 @@ where
 							// phantom or an intercept.
 							if (self.default_configuration.accept_intercept_htlcs &&
 							   fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, *short_channel_id, &self.genesis_hash)) ||
-							   fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, *short_channel_id, &self.genesis_hash)
+							   fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, *short_channel_id, &self.genesis_hash) ||
+							   fake_scid::is_valid_swap(*short_channel_id)
 							{
 								None
 							} else {
@@ -2335,22 +2345,21 @@ where
 						if *outgoing_amt_msat < chan.get_counterparty_htlc_minimum_msat() { // amount_below_minimum
 							break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, chan_update_opt));
 						}
-						// if let Err((err, code)) = chan.htlc_satisfies_config(&msg, *outgoing_amt_msat, *outgoing_cltv_value) {
-						// 	break Some((err, code, chan_update_opt));
-						// }
-						dbg!(&amount_rgb, &outgoing_amount_rgb);
-						// match (amount_rgb, outgoing_amount_rgb) {
-						// 	(Some(_), None) | (None, Some(_)) => {
-						// 		break Some(("Refusing to forward a non-authorized swap.", 0x1000 | 11, chan_update_opt)); // amount_below_minimum
-						// 	},
-						// 	(None, None) => {},
-						// 	(Some(x), Some(y)) if x == y => {
-						// 		println!("Forwarding RGB payment of value: {}", x);
-						// 	},
-						// 	_ => {
-						// 		break Some(("Refusing to forward a payment with non-matching RGB amount", 0x1000 | 11, chan_update_opt)); // amount_below_minimum
-						// 	}
-						// }
+						if let Err((err, code)) = chan.htlc_satisfies_config(&msg, *outgoing_amt_msat, *outgoing_cltv_value) {
+							break Some((err, code, chan_update_opt));
+						}
+						match (amount_rgb, outgoing_amount_rgb) {
+							(Some(_), None) | (None, Some(_)) => {
+								break Some(("Refusing to forward a non-authorized swap.", 0x1000 | 11, chan_update_opt)); // amount_below_minimum
+							},
+							(None, None) => {},
+							(Some(x), Some(y)) if x == y => {
+								log_trace!(self.logger, "Forwarding RGB payment of value: {}", x);
+							},
+							_ => {
+								break Some(("Refusing to forward a payment with non-matching RGB amount", 0x1000 | 11, chan_update_opt)); // amount_below_minimum
+							}
+						}
 						chan_update_opt
 					} else {
 						if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + MIN_CLTV_EXPIRY_DELTA as u64 {
@@ -2997,27 +3006,30 @@ where
 	/// [`HTLCIntercepted`]: events::Event::HTLCIntercepted
 	// TODO: when we move to deciding the best outbound channel at forward time, only take
 	// `next_node_id` and not `next_hop_channel_id`
-	pub fn forward_intercepted_htlc(&self, intercept_id: InterceptId, next_hop_channel_id: &[u8; 32], next_node_id: PublicKey, amt_to_forward_msat: u64) -> Result<(), APIError> {
+	pub fn forward_intercepted_htlc(&self, intercept_id: InterceptId, next_hop: NextHopForward<'_>, amt_to_forward_msat: u64, amt_to_forward_rgb: Option<u64>) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let next_hop_scid = {
-			let peer_state_lock = self.per_peer_state.read().unwrap();
-			let peer_state_mutex = peer_state_lock.get(&next_node_id)
-				.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", next_node_id) })?;
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-			let peer_state = &mut *peer_state_lock;
-			match peer_state.channel_by_id.get(next_hop_channel_id) {
-				Some(chan) => {
-					if !chan.is_usable() {
-						return Err(APIError::ChannelUnavailable {
-							err: format!("Channel with id {} not fully established", log_bytes!(*next_hop_channel_id))
-						})
-					}
-					chan.get_short_channel_id().unwrap_or(chan.outbound_scid_alias())
-				},
-				None => return Err(APIError::ChannelUnavailable {
-					err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*next_hop_channel_id), next_node_id)
-				})
+		let next_hop_scid = match next_hop {
+			NextHopForward::ShortChannelId(scid) => scid,
+			NextHopForward::ChannelId(next_node_id, next_hop_channel_id) => {
+				let peer_state_lock = self.per_peer_state.read().unwrap();
+				let peer_state_mutex = peer_state_lock.get(&next_node_id)
+					.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", next_node_id) })?;
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				match peer_state.channel_by_id.get(next_hop_channel_id) {
+					Some(chan) => {
+						if !chan.is_usable() {
+							return Err(APIError::ChannelUnavailable {
+								err: format!("Channel with id {} not fully established", log_bytes!(*next_hop_channel_id))
+							})
+						}
+						chan.get_short_channel_id().unwrap_or(chan.outbound_scid_alias())
+					},
+					None => return Err(APIError::ChannelUnavailable {
+						err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*next_hop_channel_id), next_node_id)
+					})
+				}
 			}
 		};
 
@@ -3033,7 +3045,7 @@ where
 			_ => unreachable!() // Only `PendingHTLCRouting::Forward`s are intercepted
 		};
 		let pending_htlc_info = PendingHTLCInfo {
-			outgoing_amt_msat: amt_to_forward_msat, routing, ..payment.forward_info
+			outgoing_amt_msat: amt_to_forward_msat, outgoing_amount_rgb: amt_to_forward_rgb, routing, ..payment.forward_info
 		};
 
 		let mut per_source_pending_forward = [(
@@ -4962,20 +4974,24 @@ where
 						},
 						hash_map::Entry::Vacant(entry) => {
 							if !is_our_scid && forward_info.incoming_amt_msat.is_some() &&
-							   fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, scid, &self.genesis_hash)
+							   (fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, scid, &self.genesis_hash) || fake_scid::is_valid_swap(scid))
 							{
+								let is_swap = fake_scid::is_valid_swap(scid);
+								let scid = if is_swap { fake_scid::get_real_swap_scid(scid) } else { scid };
 								let intercept_id = InterceptId(Sha256::hash(&forward_info.incoming_shared_secret).into_inner());
 								let mut pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
 								match pending_intercepts.entry(intercept_id) {
 									hash_map::Entry::Vacant(entry) => {
 										new_intercept_events.push(events::Event::HTLCIntercepted {
+											is_swap,
 											requested_next_hop_scid: scid,
 											payment_hash: forward_info.payment_hash,
 											inbound_amount_msat: forward_info.incoming_amt_msat.unwrap(),
 											expected_outbound_amount_msat: forward_info.outgoing_amt_msat,
 											inbound_rgb_amount: forward_info.amount_rgb,
 											expected_outbound_rgb_amount: forward_info.outgoing_amount_rgb,
-											intercept_id
+											intercept_id,
+											prev_short_channel_id,
 										});
 										entry.insert(PendingAddHTLCInfo {
 											prev_short_channel_id, prev_funding_outpoint, prev_htlc_id, prev_user_channel_id, forward_info });

@@ -158,11 +158,16 @@ pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, paymen
 	let mut res: Vec<msgs::OnionHopData> = Vec::with_capacity(path.len());
 
 	for (idx, hop) in path.iter().rev().enumerate() {
-		let value_msat = if idx == 0 { 
-			hop.fee_msat
+		dbg!(idx, hop.fee_msat, hop.payment_amount, hop.rgb_amount);
+		let (value_msat, value_rgb) = if idx == 0 { 
+			// If there's an rgb amount set it to zero.
+			// This is necessary because rgb payments are handled differently and the node
+			// would think we were trying to send the same amount we are receiving and the balance wouldn't change.
+			// TODO: This may be a bug in rgb payments, it should be investigated
+			(hop.fee_msat, hop.rgb_amount.map(|_| 0))
 		} else {
 			cur_accumulated_fees += hop.fee_msat;
-			last_msat_amount
+			(last_msat_amount, last_amount_rgb)
 		};
 
 		let cltv = if cur_cltv == starting_htlc_offset { hop.cltv_expiry_delta + starting_htlc_offset } else { cur_cltv };
@@ -183,7 +188,7 @@ pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, paymen
 				}
 			},
 			amt_to_forward: value_msat,
-			rgb_amount_to_forward: last_amount_rgb,
+			rgb_amount_to_forward: value_rgb,
 			outgoing_cltv_value: cltv,
 		});
 		last_amount_rgb = hop.rgb_amount;
