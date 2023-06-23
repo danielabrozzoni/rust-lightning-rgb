@@ -246,7 +246,7 @@ pub(crate) fn color_commitment(channel_id: &[u8; 32], funding_outpoint: &OutPoin
 
 /// Color HTLC transaction
 pub(crate) fn color_htlc(htlc_tx: &mut Transaction, htlc: &HTLCOutputInCommitment, ldk_data_dir: &PathBuf) -> Result<(), ChannelError> {
-	println!("color_htlc: amount_rgb={:?}", htlc.amount_rgb);
+	// println!("color_htlc: amount_rgb={:?}", htlc.amount_rgb);
 	let mut psbt = Psbt::with(htlc_tx.clone(), PsbtVersion::V0).expect("valid transaction");
 
 	let mut rgb_client = get_rgb_node_client(&ldk_data_dir);
@@ -508,6 +508,7 @@ pub(crate) fn handle_funding(temporary_channel_id: &[u8; 32], funding_txid: Stri
 
 /// Update RGB channel amount
 pub(crate) fn update_rgb_channel_amount(channel_id: &[u8; 32], rgb_offered_htlc: u64, rgb_received_htlc: u64, ldk_data_dir: &PathBuf) {
+	// println!("update_rgb_channel_amount: offered={} received={}", rgb_offered_htlc, rgb_received_htlc);
 	let (mut rgb_info, info_file_path) = get_rgb_channel_info(channel_id, ldk_data_dir);
 
 	if rgb_offered_htlc > rgb_received_htlc {
