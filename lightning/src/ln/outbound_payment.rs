@@ -18,7 +18,7 @@ use crate::events::{self, PaymentFailureReason};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{ChannelDetails, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, PaymentId};
 use crate::ln::onion_utils::HTLCFailReason;
-use crate::rgb_utils::filter_first_hops;
+use crate::rgb_utils::{filter_first_hops, is_payment_rgb};
 use crate::routing::router::{InFlightHtlcs, Path, PaymentParameters, Route, RouteParameters, Router};
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
@@ -668,7 +668,9 @@ impl OutboundPayments {
 		}
 
 		let mut filtered_first_hops = first_hops.iter().collect::<Vec<_>>();
-		let contract_id = filter_first_hops(&self.ldk_data_dir, &payment_hash, &mut filtered_first_hops);
+		let contract_id = is_payment_rgb(&self.ldk_data_dir, &payment_hash).then(|| {
+			filter_first_hops(&self.ldk_data_dir, &payment_hash, &mut filtered_first_hops)
+		});
 
 		let route = router.find_route_with_id(
 			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,

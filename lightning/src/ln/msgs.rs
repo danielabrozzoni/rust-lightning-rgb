@@ -211,7 +211,7 @@ pub struct OpenChannel {
 	/// feature bits with our counterparty's feature bits from the [`Init`] message.
 	pub channel_type: Option<ChannelTypeFeatures>,
 	/// The consignment endpoint used to exchange the RGB consignment
-	pub consignment_endpoint: RgbTransport,
+	pub consignment_endpoint: Option<RgbTransport>,
 }
 
 /// An [`accept_channel`] message to be sent to or received from a peer.
@@ -371,7 +371,7 @@ pub struct UpdateAddHTLC {
 	pub cltv_expiry: u32,
 	pub(crate) onion_routing_packet: OnionPacket,
 	/// The RGB amount allocated to the HTLC
-	pub amount_rgb: u64,
+	pub amount_rgb: Option<u64>,
 }
 
  /// An onion message to be sent to or received from a peer.
@@ -739,7 +739,7 @@ pub struct UnsignedChannelAnnouncement {
 	/// The funding key for the second node
 	pub bitcoin_key_2: NodeId,
 	/// RGB contract ID
-	pub contract_id: ContractId,
+	pub contract_id: Option<ContractId>,
 	pub(crate) excess_data: Vec<u8>,
 }
 /// A [`channel_announcement`] message to be sent to or received from a peer.
