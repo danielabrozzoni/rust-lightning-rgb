@@ -19,7 +19,7 @@ use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{ChannelDetails, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, PaymentId};
 use crate::ln::onion_utils::HTLCFailReason;
 use crate::rgb_utils::{filter_first_hops, is_payment_rgb};
-use crate::routing::router::{InFlightHtlcs, Path, PaymentParameters, Route, RouteParameters, Router};
+use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteParameters, Path, Router};
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 use crate::util::time::Time;
@@ -721,7 +721,7 @@ impl OutboundPayments {
 		let route = match router.find_route_with_id(
 			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
 			Some(&filtered_first_hops), &inflight_htlcs(),
-			payment_hash, payment_id, contract_id,
+			payment_hash, payment_id, Some(contract_id),
 		) {
 			Ok(route) => route,
 			Err(e) => {
@@ -738,7 +738,6 @@ impl OutboundPayments {
 			}
 		}
 
-		const RETRY_OVERFLOW_PERCENTAGE: u64 = 10;
 		let mut onion_session_privs = Vec::with_capacity(route.paths.len());
 		for _ in 0..route.paths.len() {
 			onion_session_privs.push(entropy_source.get_secure_random_bytes());
@@ -767,6 +766,36 @@ impl OutboundPayments {
 						PendingOutboundPayment::Retryable {
 							total_msat, keysend_preimage, payment_secret, payment_metadata, pending_amt_msat, ..
 						} => {
+							let mut filtered_first_hops = first_hops.iter().collect::<Vec<_>>();
+							let contract_id = is_payment_rgb(&self.ldk_data_dir, &payment_hash).then(|| {
+								filter_first_hops(&self.ldk_data_dir, &payment_hash, &mut filtered_first_hops)
+							});
+
+							let route = match router.find_route(
+								&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
+								Some(&filtered_first_hops), &inflight_htlcs(), contract_id
+							) {
+								Ok(route) => route,
+								Err(e) => {
+									log_error!(logger, "Failed to find a route on retry, abandoning payment {}: {:#?}", log_bytes!(payment_id.0), e);
+									self.abandon_payment(payment_id, PaymentFailureReason::RouteNotFound, pending_events);
+									return
+								}
+							};
+							for path in route.paths.iter() {
+								if path.hops.len() == 0 {
+									log_error!(logger, "length-0 path in route");
+									self.abandon_payment(payment_id, PaymentFailureReason::RouteNotFound, pending_events);
+									return
+								}
+							}
+
+							const RETRY_OVERFLOW_PERCENTAGE: u64 = 10;
+							let mut onion_session_privs = Vec::with_capacity(route.paths.len());
+							for _ in 0..route.paths.len() {
+								onion_session_privs.push(entropy_source.get_secure_random_bytes());
+							}
+
 							let retry_amt_msat = route.get_total_amount();
 							if retry_amt_msat + *pending_amt_msat > *total_msat * (100 + RETRY_OVERFLOW_PERCENTAGE) / 100 {
 								log_error!(logger, "retry_amt_msat of {} will put pending_amt_msat (currently: {}) more than 10% over total_payment_amt_msat of {}", retry_amt_msat, pending_amt_msat, total_msat);
@@ -1443,7 +1472,7 @@ mod tests {
 	use crate::ln::msgs::{ErrorAction, LightningError};
 	use crate::ln::outbound_payment::{OutboundPayments, Retry, RetryableSendFailure};
 	use crate::routing::gossip::NetworkGraph;
-	use crate::routing::router::{InFlightHtlcs, Path, PaymentParameters, Route, RouteHop, RouteParameters};
+	use crate::routing::router::{InFlightHtlcs, Path, PaymentParameters, Route, RouteParameters};
 	use crate::sync::{Arc, Mutex};
 	use crate::util::errors::APIError;
 	use crate::util::test_utils;
