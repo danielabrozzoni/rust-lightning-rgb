@@ -62,7 +62,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 {
 	fn find_route(
 		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&ChannelDetails]>,
-		inflight_htlcs: &InFlightHtlcs, contract_id: ContractId
+		inflight_htlcs: &InFlightHtlcs, contract_id: Option<ContractId>
 	) -> Result<Route, LightningError> {
 		let random_seed_bytes = {
 			let mut locked_random_seed_bytes = self.random_seed_bytes.lock().unwrap();
@@ -83,14 +83,14 @@ pub trait Router {
 	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values.
 	fn find_route(
 		&self, payer: &PublicKey, route_params: &RouteParameters,
-		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: &InFlightHtlcs, contract_id: ContractId
+		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: &InFlightHtlcs, contract_id: Option<ContractId>
 	) -> Result<Route, LightningError>;
 	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values. Includes
 	/// `PaymentHash` and `PaymentId` to be able to correlate the request with a specific payment.
 	fn find_route_with_id(
 		&self, payer: &PublicKey, route_params: &RouteParameters,
 		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: &InFlightHtlcs,
-		_payment_hash: PaymentHash, _payment_id: PaymentId, contract_id: ContractId
+		_payment_hash: PaymentHash, _payment_id: PaymentId, contract_id: Option<ContractId>
 	) -> Result<Route, LightningError> {
 		self.find_route(payer, route_params, first_hops, inflight_htlcs, contract_id)
 	}
@@ -1101,14 +1101,14 @@ fn default_node_features() -> NodeFeatures {
 pub fn find_route<L: Deref, GL: Deref, S: Score>(
 	our_node_pubkey: &PublicKey, route_params: &RouteParameters,
 	network_graph: &NetworkGraph<GL>, first_hops: Option<&[&ChannelDetails]>, logger: L,
-	scorer: &S, random_seed_bytes: &[u8; 32], contract_id: ContractId
+	scorer: &S, random_seed_bytes: &[u8; 32], contract_id: Option<ContractId>
 ) -> Result<Route, LightningError>
 where L::Target: Logger, GL::Target: Logger {
 	let graph_lock = network_graph.read_only();
 	let final_cltv_expiry_delta = route_params.payment_params.final_cltv_expiry_delta;
 	let mut route = get_route(our_node_pubkey, &route_params.payment_params, &graph_lock, first_hops,
 		route_params.final_value_msat, final_cltv_expiry_delta, logger, scorer,
-		random_seed_bytes, Some(contract_id))?;
+		random_seed_bytes, contract_id)?;
 	add_random_cltv_offset(&mut route, &route_params.payment_params, &graph_lock, random_seed_bytes);
 	Ok(route)
 }
