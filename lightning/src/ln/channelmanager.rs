@@ -46,7 +46,7 @@ use crate::ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfi
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::InvoiceFeatures;
-use crate::rgb_utils::{get_rgb_payment_info, handle_funding};
+use crate::rgb_utils::handle_funding;
 use crate::routing::gossip::NetworkGraph;
 use crate::routing::router::{BlindedTail, DefaultRouter, InFlightHtlcs, Path, PaymentParameters, Route, RouteHop, RouteParameters, Router};
 use crate::routing::scoring::ProbabilisticScorer;
@@ -133,6 +133,7 @@ pub(super) struct PendingHTLCInfo {
 	pub(super) outgoing_amt_msat: u64,
 	pub(super) outgoing_cltv_value: u32,
 	pub(super) amount_rgb: Option<u64>,
+	pub(super) outgoing_amount_rgb: Option<u64>,
 }
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
@@ -250,6 +251,15 @@ impl Readable for InterceptId {
 		let buf: [u8; 32] = Readable::read(r)?;
 		Ok(InterceptId(buf))
 	}
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+/// Next hop to forward the payment to
+pub enum NextHopForward<'c> {
+	/// Full public key of the peer and channel id
+	ChannelId(PublicKey, &'c [u8; 32]),
+	/// Short channel id
+	ShortChannelId(u64),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -2282,6 +2292,25 @@ where
 				msg: "Upstream node sent less than we were supposed to receive in payment",
 			});
 		}
+		match (hop_data.rgb_amount_to_forward, amount_rgb) {
+			(Some(_), None) | (None, Some(_)) => {
+				return Err(ReceiveError {
+					err_code: 19, // TODO
+					err_data: vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+					msg: "Upstream node didn't send what we expected",
+				});
+			},
+			(None, None) => {},
+			(Some(x), Some(y)) if x < y => {},
+			_ => {
+				return Err(ReceiveError {
+					err_code: 19, // TODO
+					err_data: vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+					msg: "The payment's RGB is lower than expected",
+				});
+
+			}
+		}
 
 		let routing = match hop_data.format {
 			msgs::OnionHopDataFormat::NonFinalNode { .. } => {
@@ -2342,6 +2371,7 @@ where
 			outgoing_amt_msat: hop_data.amt_to_forward,
 			outgoing_cltv_value: hop_data.outgoing_cltv_value,
 			amount_rgb,
+			outgoing_amount_rgb: amount_rgb,
 		})
 	}
 
@@ -2431,6 +2461,7 @@ where
 					},
 				};
 
+				log_trace!(self.logger, "Forward incoming_msat: {} outgoing_msat: {} incoming_rgb: {:?} outgoing_rgb: {:?} over {}", msg.amount_msat, next_hop_data.amt_to_forward, msg.amount_rgb, next_hop_data.rgb_amount_to_forward, short_channel_id);
 				PendingHTLCStatus::Forward(PendingHTLCInfo {
 					routing: PendingHTLCRouting::Forward {
 						onion_packet: outgoing_packet,
@@ -2442,11 +2473,12 @@ where
 					outgoing_amt_msat: next_hop_data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
 					amount_rgb: msg.amount_rgb,
+					outgoing_amount_rgb: next_hop_data.rgb_amount_to_forward,
 				})
 			}
 		};
 
-		if let &PendingHTLCStatus::Forward(PendingHTLCInfo { ref routing, ref outgoing_amt_msat, ref outgoing_cltv_value, .. }) = &pending_forward_info {
+		if let &PendingHTLCStatus::Forward(PendingHTLCInfo { ref routing, ref outgoing_amt_msat, ref outgoing_cltv_value, ref amount_rgb, ref outgoing_amount_rgb, .. }) = &pending_forward_info {
 			// If short_channel_id is 0 here, we'll reject the HTLC as there cannot be a channel
 			// with a short_channel_id of 0. This is important as various things later assume
 			// short_channel_id is non-0 in any ::Forward.
@@ -2459,7 +2491,8 @@ where
 							// phantom or an intercept.
 							if (self.default_configuration.accept_intercept_htlcs &&
 							   fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, *short_channel_id, &self.genesis_hash)) ||
-							   fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, *short_channel_id, &self.genesis_hash)
+							   fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, *short_channel_id, &self.genesis_hash) ||
+							   fake_scid::is_valid_swap(*short_channel_id)
 							{
 								None
 							} else {
@@ -2518,6 +2551,18 @@ where
 						}
 						if let Err((err, code)) = chan.htlc_satisfies_config(&msg, *outgoing_amt_msat, *outgoing_cltv_value) {
 							break Some((err, code, chan_update_opt));
+						}
+						match (amount_rgb, outgoing_amount_rgb) {
+							(Some(_), None) | (None, Some(_)) => {
+								break Some(("Refusing to forward a non-authorized swap.", 0x1000 | 11, chan_update_opt)); // amount_below_minimum
+							},
+							(None, None) => {},
+							(Some(x), Some(y)) if x == y => {
+								log_trace!(self.logger, "Forwarding RGB payment of value: {}", x);
+							},
+							_ => {
+								break Some(("Refusing to forward a payment with non-matching RGB amount", 0x1000 | 11, chan_update_opt)); // amount_below_minimum
+							}
 						}
 						chan_update_opt
 					} else {
@@ -2718,7 +2763,7 @@ where
 						session_priv: session_priv.clone(),
 						first_hop_htlc_msat: htlc_msat,
 						payment_id,
-					}, onion_packet, &self.logger, amount_rgb);
+					}, onion_packet, &self.logger, htlc_amount_rgb);
 				match break_chan_entry!(self, send_res, chan) {
 					Some(monitor_update) => {
 						let update_id = monitor_update.update_id;
@@ -2818,7 +2863,7 @@ where
 
 	/// Similar to [`ChannelManager::send_payment`], but will automatically find a route based on
 	/// `route_params` and retry failed payment paths based on `retry_strategy`.
-	pub fn send_payment(&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<(), RetryableSendFailure> {
+	pub fn send_payment(&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry, override_rgb_amount: Option<u64>) -> Result<(), RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.pending_outbound_payments
@@ -2826,8 +2871,20 @@ where
 				&self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
 				&self.entropy_source, &self.node_signer, best_block_height, &self.logger,
 				&self.pending_events,
-				|path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage, session_priv|
-				self.send_payment_along_path(path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage, session_priv))
+				|path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage, session_priv| {
+					let path = match override_rgb_amount {
+						Some(v) => {
+							let mut path = path.clone();
+							for hop in &mut path.hops {
+								hop.rgb_amount = Some(v);
+							}
+							path
+						},
+						None => path.clone(),
+					};
+
+					self.send_payment_along_path(&path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage, session_priv)
+				})
 	}
 
 	#[cfg(test)]
@@ -3164,27 +3221,30 @@ where
 	/// [`HTLCIntercepted`]: events::Event::HTLCIntercepted
 	// TODO: when we move to deciding the best outbound channel at forward time, only take
 	// `next_node_id` and not `next_hop_channel_id`
-	pub fn forward_intercepted_htlc(&self, intercept_id: InterceptId, next_hop_channel_id: &[u8; 32], next_node_id: PublicKey, amt_to_forward_msat: u64) -> Result<(), APIError> {
+	pub fn forward_intercepted_htlc(&self, intercept_id: InterceptId, next_hop: NextHopForward<'_>, amt_to_forward_msat: u64, amt_to_forward_rgb: Option<u64>) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let next_hop_scid = {
-			let peer_state_lock = self.per_peer_state.read().unwrap();
-			let peer_state_mutex = peer_state_lock.get(&next_node_id)
-				.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", next_node_id) })?;
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-			let peer_state = &mut *peer_state_lock;
-			match peer_state.channel_by_id.get(next_hop_channel_id) {
-				Some(chan) => {
-					if !chan.is_usable() {
-						return Err(APIError::ChannelUnavailable {
-							err: format!("Channel with id {} not fully established", log_bytes!(*next_hop_channel_id))
-						})
-					}
-					chan.get_short_channel_id().unwrap_or(chan.outbound_scid_alias())
-				},
-				None => return Err(APIError::ChannelUnavailable {
-					err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*next_hop_channel_id), next_node_id)
-				})
+		let next_hop_scid = match next_hop {
+			NextHopForward::ShortChannelId(scid) => scid,
+			NextHopForward::ChannelId(next_node_id, next_hop_channel_id) => {
+				let peer_state_lock = self.per_peer_state.read().unwrap();
+				let peer_state_mutex = peer_state_lock.get(&next_node_id)
+					.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", next_node_id) })?;
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				match peer_state.channel_by_id.get(next_hop_channel_id) {
+					Some(chan) => {
+						if !chan.is_usable() {
+							return Err(APIError::ChannelUnavailable {
+								err: format!("Channel with id {} not fully established", log_bytes!(*next_hop_channel_id))
+							})
+						}
+						chan.get_short_channel_id().unwrap_or(chan.outbound_scid_alias())
+					},
+					None => return Err(APIError::ChannelUnavailable {
+						err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*next_hop_channel_id), next_node_id)
+					})
+				}
 			}
 		};
 
@@ -3200,7 +3260,7 @@ where
 			_ => unreachable!() // Only `PendingHTLCRouting::Forward`s are intercepted
 		};
 		let pending_htlc_info = PendingHTLCInfo {
-			outgoing_amt_msat: amt_to_forward_msat, routing, ..payment.forward_info
+			outgoing_amt_msat: amt_to_forward_msat, outgoing_amount_rgb: amt_to_forward_rgb, routing, ..payment.forward_info
 		};
 
 		let mut per_source_pending_forward = [(
@@ -3269,7 +3329,7 @@ where
 										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id,
 										forward_info: PendingHTLCInfo {
 											routing, incoming_shared_secret, payment_hash, outgoing_amt_msat,
-											outgoing_cltv_value, incoming_amt_msat: _, amount_rgb
+											outgoing_cltv_value, incoming_amt_msat: _, outgoing_amount_rgb: _, amount_rgb
 										}
 									}) => {
 										macro_rules! failure_handler {
@@ -3382,7 +3442,7 @@ where
 										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id: _,
 										forward_info: PendingHTLCInfo {
 											incoming_shared_secret, payment_hash, outgoing_amt_msat, outgoing_cltv_value,
-											routing: PendingHTLCRouting::Forward { onion_packet, .. }, incoming_amt_msat: _, amount_rgb,
+											routing: PendingHTLCRouting::Forward { onion_packet, .. }, incoming_amt_msat: _, amount_rgb: _, outgoing_amount_rgb,
 										},
 									}) => {
 										log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", prev_short_channel_id, log_bytes!(payment_hash.0), short_chan_id);
@@ -3396,7 +3456,7 @@ where
 										});
 										if let Err(e) = chan.get_mut().queue_add_htlc(outgoing_amt_msat,
 											payment_hash, outgoing_cltv_value, htlc_source.clone(),
-											onion_packet, &self.logger, amount_rgb)
+											onion_packet, &self.logger, outgoing_amount_rgb)
 										{
 											if let ChannelError::Ignore(msg) = e {
 												log_trace!(self.logger, "Failed to forward HTLC with payment_hash {}: {}", log_bytes!(payment_hash.0), msg);
@@ -4367,7 +4427,7 @@ where
 					|htlc_claim_value_msat| {
 						if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
 							let fee_earned_msat = if let Some(claimed_htlc_value) = htlc_claim_value_msat {
-								Some(claimed_htlc_value - forwarded_htlc_value)
+								claimed_htlc_value.checked_sub(forwarded_htlc_value)
 							} else { None };
 
 							let prev_channel_id = Some(prev_outpoint.to_channel_id());
@@ -5185,18 +5245,24 @@ where
 						},
 						hash_map::Entry::Vacant(entry) => {
 							if !is_our_scid && forward_info.incoming_amt_msat.is_some() &&
-							   fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, scid, &self.genesis_hash)
+							   (fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, scid, &self.genesis_hash) || fake_scid::is_valid_swap(scid))
 							{
+								let is_swap = fake_scid::is_valid_swap(scid);
+								let scid = if is_swap { fake_scid::get_real_swap_scid(scid) } else { scid };
 								let intercept_id = InterceptId(Sha256::hash(&forward_info.incoming_shared_secret).into_inner());
 								let mut pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
 								match pending_intercepts.entry(intercept_id) {
 									hash_map::Entry::Vacant(entry) => {
 										new_intercept_events.push(events::Event::HTLCIntercepted {
+											is_swap,
 											requested_next_hop_scid: scid,
 											payment_hash: forward_info.payment_hash,
 											inbound_amount_msat: forward_info.incoming_amt_msat.unwrap(),
 											expected_outbound_amount_msat: forward_info.outgoing_amt_msat,
-											intercept_id
+											inbound_rgb_amount: forward_info.amount_rgb,
+											expected_outbound_rgb_amount: forward_info.outgoing_amount_rgb,
+											intercept_id,
+											prev_short_channel_id,
 										});
 										entry.insert(PendingAddHTLCInfo {
 											prev_short_channel_id, prev_funding_outpoint, prev_htlc_id, prev_user_channel_id, forward_info });
@@ -6936,6 +7002,7 @@ impl_writeable_tlv_based!(PendingHTLCInfo, {
 	(8, outgoing_cltv_value, required),
 	(9, incoming_amt_msat, option),
 	(10, amount_rgb, required),
+	(12, outgoing_amount_rgb, required),
 });
 
 

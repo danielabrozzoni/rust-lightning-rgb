@@ -240,6 +240,10 @@ pub struct RouteHop {
 	///
 	/// [`BlindedPath`]: crate::blinded_path::BlindedPath
 	pub fee_msat: u64,
+	/// How much to pay the node.
+	pub payment_amount: u64,
+	/// RGB amount to send to the following node
+	pub rgb_amount: Option<u64>,
 	/// The CLTV delta added for this hop.
 	/// If this is the last hop in [`Path::hops`]:
 	/// * if we're sending to a [`BlindedPath`], this is the CLTV delta for the entire blinded path
@@ -256,6 +260,8 @@ impl_writeable_tlv_based!(RouteHop, {
 	(6, channel_features, required),
 	(8, fee_msat, required),
 	(10, cltv_expiry_delta, required),
+	(12, rgb_amount, option),
+	(14, payment_amount, required),
 });
 
 /// The blinded portion of a [`Path`], if we're routing to a recipient who provided blinded paths in
@@ -414,7 +420,7 @@ impl Readable for Route {
 		let blinded_tails = blinded_tails.unwrap_or(Vec::new());
 		if blinded_tails.len() != 0 {
 			if blinded_tails.len() != paths.len() { return Err(DecodeError::InvalidValue) }
-			for (mut path, blinded_tail_opt) in paths.iter_mut().zip(blinded_tails.into_iter()) {
+			for (path, blinded_tail_opt) in paths.iter_mut().zip(blinded_tails.into_iter()) {
 				path.blinded_tail = blinded_tail_opt;
 			}
 		}
@@ -993,7 +999,7 @@ impl<'a> PaymentPath<'a> {
 				cur_hop_fees_msat = self.hops.get(i + 1).unwrap().0.hop_use_fee_msat;
 			}
 
-			let mut cur_hop = &mut self.hops.get_mut(i).unwrap().0;
+			let cur_hop = &mut self.hops.get_mut(i).unwrap().0;
 			cur_hop.next_hops_fee_msat = total_fee_paid_msat;
 			// Overpay in fees if we can't save these funds due to htlc_minimum_msat.
 			// We try to account for htlc_minimum_msat in scoring (add_entry!), so that nodes don't
@@ -2068,7 +2074,9 @@ where L::Target: Logger {
 				short_channel_id: payment_hop.candidate.short_channel_id(),
 				channel_features: payment_hop.candidate.features(),
 				fee_msat: payment_hop.fee_msat,
+				payment_amount: final_value_msat,
 				cltv_expiry_delta: payment_hop.candidate.cltv_expiry_delta(),
+				rgb_amount: None,
 			})
 		}).collect::<Vec<_>>();
 		// Propagate the cltv_expiry_delta one hop backwards since the delta from the current hop is

@@ -173,6 +173,14 @@ pub(crate) mod fake_scid {
 			&& valid_vout == scid_utils::vout_from_scid(&scid) as u8
 	}
 
+	pub fn is_valid_swap(scid: u64) -> bool {
+		scid & 0x80000000_00000000 > 0
+	}
+
+	pub fn get_real_swap_scid(scid: u64) -> u64 {
+		scid & 0x7fffffff_ffffffff
+	}
+
 	#[cfg(test)]
 	mod tests {
 		use bitcoin::blockdata::constants::genesis_block;

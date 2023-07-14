@@ -3575,9 +3575,15 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 						log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", log_bytes!(htlc.payment_hash.0));
 						htlc.state = InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info);
 						require_commitment = true;
+
+						if let Some(amount_rgb) = htlc.amount_rgb {
+							rgb_received_htlc += amount_rgb;
+						}
 					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info) = state {
 						match forward_info {
 							PendingHTLCStatus::Fail(fail_msg) => {
+								// TODO: we probably want to roll-back the htlc here??
+
 								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to LocalRemoved due to PendingHTLCStatus indicating failure", log_bytes!(htlc.payment_hash.0));
 								require_commitment = true;
 								match fail_msg {
@@ -3599,7 +3605,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 						}
 					}
 				}
-				rgb_received_htlc += htlc.amount_rgb;
 			}
 			for htlc in pending_outbound_htlcs.iter_mut() {
 				if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
@@ -5946,6 +5951,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// We can upgrade the status of some HTLCs that are waiting on a commitment, even if we
 		// fail to generate this, we still are at least at a position where upgrading their status
 		// is acceptable.
+		let mut rgb_received_htlc = 0;
 		for htlc in self.pending_inbound_htlcs.iter_mut() {
 			let new_state = if let &InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref forward_info) = &htlc.state {
 				Some(InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info.clone()))
@@ -5953,6 +5959,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			if let Some(state) = new_state {
 				log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", log_bytes!(htlc.payment_hash.0));
 				htlc.state = state;
+
+				if let Some(amount_rgb) = htlc.amount_rgb {
+					rgb_received_htlc += amount_rgb;
+				}
 			}
 		}
 		for htlc in self.pending_outbound_htlcs.iter_mut() {
