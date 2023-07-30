@@ -530,7 +530,7 @@ impl OutboundPayments {
 		payment_id: PaymentId, retry_strategy: Retry, route_params: RouteParameters, router: &R,
 		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32, logger: &L,
-		pending_events: &Mutex<Vec<events::Event>>, send_payment_along_path: SP,
+		pending_events: &Mutex<Vec<events::Event>>, send_payment_along_path: SP, _override_rgb_amount: Option<u64>,
 	) -> Result<PaymentHash, RetryableSendFailure>
 	where
 		R::Target: Router,
