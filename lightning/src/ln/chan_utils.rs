@@ -1594,6 +1594,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 			assert!(this_htlc.transaction_output_index.is_some());
 			let mut htlc_tx = build_htlc_transaction(&txid, inner.feerate_per_kw, channel_parameters.contest_delay(), &this_htlc, self.opt_anchors(), self.opt_non_zero_fee_anchors.is_some(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 			if inner.is_colored {
+				println!("Dani debug 2");
 				match color_htlc(&mut htlc_tx, &this_htlc, &ldk_data_dir) {
 					Err(_e) => return Err(()),
 					_ => {}

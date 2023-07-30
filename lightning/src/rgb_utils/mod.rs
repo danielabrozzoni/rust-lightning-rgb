@@ -159,6 +159,7 @@ pub(crate) fn color_commitment(channel_id: &[u8; 32], funding_outpoint: &OutPoin
 		.assignments_type(&FieldName::from("beneficiary")).expect("valid assignment");
 
 	for htlc in commitment_tx.htlcs() {
+		println!("Dani HTLC: {:?}", htlc);
 		let htlc_vout = htlc.transaction_output_index.unwrap();
 		htlc_vouts.push(htlc_vout);
 
@@ -296,6 +297,7 @@ pub(crate) fn color_commitment(channel_id: &[u8; 32], funding_outpoint: &OutPoin
 
 /// Color HTLC transaction
 pub(crate) fn color_htlc(htlc_tx: &mut Transaction, htlc: &HTLCOutputInCommitment, ldk_data_dir: &Path) -> Result<(), ChannelError> {
+	println!("Dani HTLC: {:?}", htlc);
 	htlc_tx.output.push(TxOut { value: 0, script_pubkey: Script::new_op_return(&[1]) });
 	let psbt = PartiallySignedTransaction::from_unsigned_tx(htlc_tx.clone()).expect("valid transaction");
 	let mut psbt = RgbPsbt::from_str(&psbt.to_string()).unwrap();
@@ -318,7 +320,7 @@ pub(crate) fn color_htlc(htlc_tx: &mut Transaction, htlc: &HTLCOutputInCommitmen
 	let seal = BuilderSeal::Revealed(GraphSeal::with_vout(CloseMethod::OpretFirst, seal_vout, STATIC_BLINDING));
 	beneficiaries.push(seal);
 	asset_transition_builder = asset_transition_builder
-		.add_raw_state_static(assignment_id, seal, TypedState::Amount(htlc.amount_rgb.expect("this is a rgb channel"))).expect("ok");
+		.add_raw_state_static(assignment_id, seal, TypedState::Amount(htlc.amount_rgb.unwrap())).expect("ok");
 
 	let prev_outputs = psbt
 		.unsigned_tx

@@ -738,6 +738,7 @@ impl OutboundPayments {
 			}
 		}
 
+		const RETRY_OVERFLOW_PERCENTAGE: u64 = 10;
 		let mut onion_session_privs = Vec::with_capacity(route.paths.len());
 		for _ in 0..route.paths.len() {
 			onion_session_privs.push(entropy_source.get_secure_random_bytes());
@@ -766,6 +767,7 @@ impl OutboundPayments {
 						PendingOutboundPayment::Retryable {
 							total_msat, keysend_preimage, payment_secret, payment_metadata, pending_amt_msat, ..
 						} => {
+							/*
 							let mut filtered_first_hops = first_hops.iter().collect::<Vec<_>>();
 							let contract_id = is_payment_rgb(&self.ldk_data_dir, &payment_hash).then(|| {
 								filter_first_hops(&self.ldk_data_dir, &payment_hash, &mut filtered_first_hops)
@@ -795,6 +797,7 @@ impl OutboundPayments {
 							for _ in 0..route.paths.len() {
 								onion_session_privs.push(entropy_source.get_secure_random_bytes());
 							}
+							*/
 
 							let retry_amt_msat = route.get_total_amount();
 							if retry_amt_msat + *pending_amt_msat > *total_msat * (100 + RETRY_OVERFLOW_PERCENTAGE) / 100 {

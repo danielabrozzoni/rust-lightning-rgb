@@ -3196,6 +3196,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					self.get_counterparty_selected_contest_delay().unwrap(), &htlc, self.opt_anchors(),
 					false, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 				if self.is_colored() {
+					println!("Dani debug 3");
 					color_htlc(&mut htlc_tx, &htlc, &self.ldk_data_dir)?;
 				}
 
